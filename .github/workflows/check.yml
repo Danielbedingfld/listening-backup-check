@@ -1,0 +1,44 @@
+name: listening backup check
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: check
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # At most one alert an hour: an hourly cache key marks "already alerted".
+      - id: hour
+        run: echo "key=alerted-$(date -u +%Y%m%d%H)" >> "$GITHUB_OUTPUT"
+      - id: seen
+        uses: actions/cache/restore@v4
+        with:
+          path: .alerted
+          key: ${{ steps.hour.outputs.key }}
+      - id: run
+        if: steps.seen.outputs.cache-hit != 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: ./check.sh
+      - if: steps.run.outputs.alert == '1'
+        run: date -u > .alerted
+      - if: steps.run.outputs.alert == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: .alerted
+          key: ${{ steps.hour.outputs.key }}
+      # GitHub pauses scheduled workflows after 60 days without repo activity: touch the repo monthly.
+      - if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date -u +%d%H%M | cut -c1-5)" = "01000" ]; then
+            date -u > keepalive.txt
+            git config user.name listening-backup-check
+            git config user.email actions@users.noreply.github.com
+            git add keepalive.txt && git commit -m "monthly keepalive" && git push
+          fi
